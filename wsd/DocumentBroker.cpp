@@ -1150,9 +1150,8 @@ void DocumentBroker::uploadToStorageInternal(const std::string& sessionId, bool 
 
             case StorageBase::AsyncUpload::State::Complete:
             {
-                LOG_DBG("Successfully uploaded [" << _docKey << "], processing results.");
-                const StorageBase::UploadResult& uploadResult = asyncUp.result();
-                return handleUploadToStorageResponse(uploadResult);
+                LOG_DBG("Finished uploading [" << _docKey << "], processing results.");
+                return handleUploadToStorageResponse(asyncUp.result());
             }
 
             case StorageBase::AsyncUpload::State::None: // Unexpected: fallback.
@@ -1174,6 +1173,7 @@ void DocumentBroker::handleUploadToStorageResponse(const StorageBase::UploadResu
     if (!_uploadRequest)
     {
         // We shouldn't get here if there is no active upload request.
+        LOG_ERR("No active upload request while handling upload result.");
         return;
     }
 
