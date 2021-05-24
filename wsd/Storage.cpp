@@ -1173,6 +1173,7 @@ void WopiStorage::uploadLocalFileToStorageAsync(const Authorization& auth,
     const auto startTime = std::chrono::steady_clock::now();
     try
     {
+        assert(!_uploadHttpSession && "Unexpected to have an upload http::session");
         _uploadHttpSession = getHttpSession(uriObject);
 
         http::Request httpRequest = initHttpRequest(uriObject, auth, cookies);
@@ -1254,10 +1255,15 @@ void WopiStorage::uploadLocalFileToStorageAsync(const Authorization& auth,
         http::Session::FinishedCallback finishedCallback =
             [=](const std::shared_ptr<http::Session>& httpSession)
         {
+            // Retire.
+            _uploadHttpSession.reset(); //FIXME: use a state machine.
+
+            assert(httpSession && "Expected a valid http::Session");
             const std::shared_ptr<const http::Response> httpResponse = httpSession->response();
 
             _wopiSaveDuration = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - startTime);
+            LOG_DBG("Finished async uploading in " << _wopiSaveDuration);
 
             WopiUploadDetails details = { filePathAnonym,
                                           uriAnonym,
@@ -1273,9 +1279,6 @@ void WopiStorage::uploadLocalFileToStorageAsync(const Authorization& auth,
 
             // Fire the callback to our client (DocBroker, typically).
             asyncUploadCallback(AsyncUpload(AsyncUpload::State::Complete, res));
-
-            // Retire.
-            _uploadHttpSession.reset(); //FIXME: use a state machine.
         };
 
         _uploadHttpSession->setFinishedHandler(finishedCallback);
