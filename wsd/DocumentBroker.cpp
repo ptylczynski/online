@@ -385,6 +385,24 @@ void DocumentBroker::pollThread()
             refreshLock();
 #endif
 
+        switch (_docState.activity())
+        {
+            case DocumentState::Activity::None:
+            {
+                // Check if there are queued activities.
+                if (!_renameFilename.empty() && !_renameSessionId.empty())
+                {
+                    startRenameFileCommand();
+                    // Nothing more to do until the save is complete.
+                    continue;
+                }
+            }
+            break;
+
+            default:
+                break;
+        }
+
         //TODO: Review if we need this here.
         if (_saveManager.isSaving() && !_saveManager.hasSavingTimedOut())
         {
@@ -948,6 +966,59 @@ bool DocumentBroker::download(const std::shared_ptr<ClientSession>& session, con
     return true;
 }
 
+std::string DocumentBroker::handleRenameFileCommand(std::string sessionId,
+                                                    std::string newFilename)
+{
+    if (newFilename.empty())
+        return "error: cmd=renamefile kind=invalid"; //TODO: better filename validation.
+
+    if (_docState.activity() == DocumentState::Activity::Rename)
+    {
+        if (_renameFilename == newFilename)
+            return std::string(); // Nothing to do, it's a duplicate.
+        else
+            return "error: cmd=renamefile kind=conflict"; // Renaming in progress.
+    }
+
+    _renameFilename = std::move(newFilename);
+    _renameSessionId = std::move(sessionId);
+
+    if (_docState.activity() == DocumentState::Activity::None)
+    {
+        // We can start by saving now.
+        startRenameFileCommand();
+    }
+
+    return std::string();
+}
+
+void DocumentBroker::startRenameFileCommand()
+{
+    if (_docState.activity() != DocumentState::Activity::None)
+    {
+        assert(!"Saving before renaming must be invoked when no other activity exists.");
+        LOG_DBG("Error: Trying to saveBeforeRename while "
+                << DocumentState::toString(_docState.activity()));
+        return;
+    }
+
+    if (_renameSessionId.empty() || _renameFilename.empty())
+    {
+        assert(!"Saving before renaming without valid filename or sessionId.");
+        LOG_DBG("Error: Trying to saveBeforeRename with invalid filename ["
+                << _renameFilename << "] and/or sessionId [" << _renameSessionId << "]");
+        return;
+    }
+
+    _docState.setActivity(DocumentState::Activity::Rename);
+
+    constexpr bool dontTerminateEdit = false;
+    constexpr bool dontSaveIfUnmodified = true;
+    constexpr bool isAutosave = false;
+    constexpr bool isExitSave = false;
+    sendUnoSave(_renameSessionId, dontTerminateEdit, dontSaveIfUnmodified, isAutosave, isExitSave);
+}
+
 bool DocumentBroker::attemptLock(const ClientSession& session, std::string& failReason)
 {
     const bool bResult = _storage->updateLockState(session.getAuthorization(), session.getCookies(),
@@ -1006,10 +1077,56 @@ void DocumentBroker::handleSaveResponse(const std::string& sessionId, bool succe
 
     // See if we have anything to upload.
     NeedToUpload needToUploadState = needToUploadToStorage();
+
+    // Handle activity-specific logic.
+    switch (_docState.activity())
+    {
+        case DocumentState::Activity::None:
+            break;
+
+        case DocumentState::Activity::Rename:
+        {
+            // If we have nothing to upload, do the rename now.
+            if (needToUploadState == NeedToUpload::No)
+            {
+                LOG_DBG("Renaming in storage as there is no new version to upload first.");
+                std::string uploadAsPath;
+                constexpr bool isRename = true;
+                uploadAsToStorage(_renameSessionId, uploadAsPath, _renameFilename, isRename);
+
+                _docState.setActivity(DocumentState::Activity::None); // We are done.
+                _renameSessionId.clear();
+                _renameFilename.clear();
+                return;
+            }
+        }
+        break;
+
+        default:
+        break;
+    }
+
     if (needToUploadState != NeedToUpload::No)
     {
         uploadToStorage(sessionId, success, result,
                         /*force=*/needToUploadState == NeedToUpload::Force);
+    }
+    else
+    {
+        // If the session is disconnected, remove.
+        const auto it = _sessions.find(sessionId);
+        if (it != _sessions.end() && it->second->isCloseFrame())
+            disconnectSessionInternal(sessionId);
+
+        // If marked to destroy, then this was the last session.
+        if (_docState.isMarkedToDestroy() || _sessions.empty())
+        {
+            // Stop so we get cleaned up and removed.
+            LOG_DBG("Stopping after saving because "
+                    << (_sessions.empty() ? "there are no active sessions left."
+                                          : "the document is marked to destroy."));
+            _stop = true;
+        }
     }
 }
 
@@ -1152,6 +1269,27 @@ void DocumentBroker::uploadToStorageInternal(const std::string& sessionId, bool 
 
         //FIXME: flag the failure so we retry.
         LOG_ERR("Failed to upload [" << _docKey << "] asynchronously.");
+
+        switch (_docState.activity())
+        {
+            case DocumentState::Activity::None:
+                break;
+
+            case DocumentState::Activity::Rename:
+            {
+                LOG_DBG("Failed to renameFile because uploading post-save failed.");
+                _docState.setActivity(DocumentState::Activity::None);
+                _renameFilename.clear();
+                auto pair = _sessions.find(_renameSessionId);
+                if (pair != _sessions.end() && pair->second)
+                    pair->second->sendTextFrameAndLogError("error: cmd=renamefile kind=failed");
+                _renameSessionId.clear();
+            }
+            break;
+
+            default:
+                break;
+        }
     };
 
     _storage->uploadLocalFileToStorageAsync(session->getAuthorization(), session->getCookies(),
@@ -1199,9 +1337,34 @@ void DocumentBroker::handleUploadToStorageResponse(const StorageBase::UploadResu
             // After a successful save, we are sure that document in the storage is same as ours
             _documentChangedInStorage = false;
 
-            LOG_DBG("Uploaded docKey [" << _docKey << "] to URI [" << _uploadRequest->uriAnonym()
-                                        << "] and updated timestamps. Document modified timestamp: "
-                                        << _storageManager.getLastModifiedTime());
+            LOG_DBG("Uploaded docKey ["
+                    << _docKey << "] to URI [" << _uploadRequest->uriAnonym()
+                    << "] and updated timestamps. Document modified timestamp: "
+                    << _storageManager.getLastModifiedTime()
+                    << ". Current Activity: " << DocumentState::toString(_docState.activity()));
+
+            // Handle activity-specific logic.
+            switch (_docState.activity())
+            {
+                case DocumentState::Activity::None:
+                    break;
+
+                case DocumentState::Activity::Rename:
+                {
+                    LOG_DBG("Renaming in storage after uploading the last saved version.");
+                    std::string uploadAsPath;
+                    constexpr bool isRename = true;
+                    uploadAsToStorage(_renameSessionId, uploadAsPath, _renameFilename, isRename);
+
+                    _docState.setActivity(DocumentState::Activity::None); // We are done.
+                    _renameSessionId.clear();
+                    _renameFilename.clear();
+                }
+                break;
+
+                default:
+                    break;
+            }
 
             // Resume polling.
             _poll->wakeup();
