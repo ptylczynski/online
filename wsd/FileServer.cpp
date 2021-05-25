@@ -787,7 +787,9 @@ void FileServerRequestHandler::preprocessFile(const HTTPRequest& request,
     if (config.getBool("security.enable_macros_execution", false))
         enableMacrosExecution = "true";
     Poco::replaceInPlace(preprocess, std::string("%ENABLE_MACROS_EXECUTION%"), enableMacrosExecution);
-    Poco::replaceInPlace(preprocess, std::string("%FEEDBACK_LOCATION%"), std::string(FEEDBACK_LOCATION));
+
+    StringVector tokens = Util::tokenize(std::string(FEEDBACK_LOCATION), ' ');
+    Poco::replaceInPlace(preprocess, std::string("%FEEDBACK_LOCATION%"), tokens.size() > 0 ? tokens[0] : "");
 
     // Capture cookies so we can optionally reuse them for the storage requests.
     {
