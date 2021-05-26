@@ -273,6 +273,9 @@ L.ImpressTileLayer = L.CanvasTileLayer.extend({
 				partNames: this._partHashes
 			});
 		}
+
+		if (app.file.fileBasedView)
+			this._updateFileBasedView();
 	},
 
 	_createCommentStructure: function (menuStructure) {
