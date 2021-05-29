@@ -408,7 +408,7 @@ L.Control.UIManager = L.Control.extend({
 	},
 
 	isFullscreen: function() {
-		if (!document.fullscreenElement && 
+		if (!document.fullscreenElement &&
 			!document.mozFullscreenElement &&
 			!document.msFullscreenElement &&
 			!document.webkitFullscreenElement)
@@ -416,8 +416,7 @@ L.Control.UIManager = L.Control.extend({
 		else
 			return true;
 	},
-	
-	
+
 	// Notebookbar helpers
 
 	hasNotebookbarShown: function() {

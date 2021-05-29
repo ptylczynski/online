@@ -39,9 +39,9 @@ L.Map = L.Evented.extend({
 		// the current tile pixel size of 256.
 		tileWidthTwips: window.tileSize * 15,
 		tileHeightTwips: window.tileSize * 15,
-		// tileHeightTwips : 
-		// Default tile height in twips (how much of the document is covered vertically in a 
-		// 256x256 pixels tile).Unless you know what you are doing, this should not be modified; 
+		// tileHeightTwips :
+		// Default tile height in twips (how much of the document is covered vertically in a
+		// 256x256 pixels tile).Unless you know what you are doing, this should not be modified;
 		// this means twips value for 256 pixels at 96dpi.
 		urlPrefix: 'lool',
 		wopiSrc: '',
@@ -271,6 +271,7 @@ L.Map = L.Evented.extend({
 		this.on('docloaded', function(e) {
 			this._docLoaded = e.status;
 			if (this._docLoaded) {
+				app.socket.sendMessage('freemiumstatus isFreemiumUser=' + this.Freemium.isFreemiumUser);
 				this.notifyActive();
 				if (!document.hasFocus()) {
 					this.fire('editorgotfocus');
