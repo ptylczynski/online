@@ -1595,6 +1595,11 @@ L.Map = L.Evented.extend({
 				this.fire('editorgotfocus');
 				this.focus();
 			}
+
+			// unselect if anything is selected already
+			if (app.sectionContainer.doesSectionExist(L.CSections.CommentList.name)) {
+				app.sectionContainer.getSectionWithName(L.CSections.CommentList.name).unselect();
+			}
 		}
 
 		// we need to keep track about the last action, this
