@@ -140,6 +140,11 @@ static std::string JailRoot;
 
 static void flushTraceEventRecordings();
 
+// Abnormally we get LOK events from another thread, which must be
+// push safely into our main poll loop to process to keep all
+// socket buffer & event processing in a single, thread.
+bool pushToMainThread(LibreOfficeKitCallback cb, int type, const char *p, void *data);
+
 #if !MOBILEAPP
 
 static LokHookFunction2* initFunction = nullptr;
@@ -821,9 +826,12 @@ public:
     static void GlobalCallback(const int type, const char* p, void* data)
     {
         if (SigUtil::getTerminationFlag())
-        {
             return;
-        }
+
+        // unusual LOK event from another thread,
+        // pData - is Document with process' lifetime.
+        if (pushToMainThread(GlobalCallback, type, p, data))
+            return;
 
         const std::string payload = p ? p : "(nil)";
         Document* self = static_cast<Document*>(data);
@@ -886,9 +894,12 @@ public:
     static void ViewCallback(const int type, const char* p, void* data)
     {
         if (SigUtil::getTerminationFlag())
-        {
             return;
-        }
+
+        // unusual LOK event from another thread.
+        // pData - is CallbackDescriptors which share process' lifetime.
+        if (pushToMainThread(ViewCallback, type, p, data))
+            return;
 
         CallbackDescriptor* descriptor = static_cast<CallbackDescriptor*>(data);
         assert(descriptor && "Null callback data.");
@@ -1060,7 +1071,7 @@ private:
         // Since callback messages are processed on idle-timer,
         // we could receive callbacks after destroying a view.
         // Retain the CallbackDescriptor object, which is shared with Core.
-        // _viewIdToCallbackDescr.erase(viewId);
+        // Do not: _viewIdToCallbackDescr.erase(viewId);
 
         viewCount = _loKitDocument->getViewsCount();
         LOG_INF("Document [" << anonymizeUrl(_url) << "] session [" <<
@@ -1382,6 +1393,7 @@ private:
 
         _loKitDocument->setViewLanguage(viewId, lang.c_str());
 
+        // viewId's monotonically increase, and CallbackDescriptors are never freed.
         _viewIdToCallbackDescr.emplace(viewId,
                                        std::unique_ptr<CallbackDescriptor>(new CallbackDescriptor({ this, viewId })));
         _loKitDocument->registerCallback(ViewCallback, _viewIdToCallbackDescr[viewId].get());
@@ -1963,6 +1975,7 @@ public:
                 int realTimeout = timeoutMicroS;
                 if (_document && _document->hasQueueItems())
                     realTimeout = 0;
+
                 if (poll(std::chrono::microseconds(realTimeout)) <= 0)
                     break;
 
@@ -1994,6 +2007,24 @@ public:
         _document = std::move(document);
     }
 
+    // unusual LOK event from another thread, push into our loop to process.
+    static bool pushToMainThread(LibreOfficeKitCallback callback, int type, const char *p, void *data)
+    {
+        if (mainPoll && mainPoll->getThreadOwner() != std::this_thread::get_id())
+        {
+            LOG_TRC("Unusual push callback to main thread");
+            std::shared_ptr<std::string> pCopy;
+            if (p)
+                pCopy = std::make_shared<std::string>(p, strlen(p));
+            mainPoll->addCallback([=]{
+                LOG_TRC("Unusual process callback in main thread");
+                callback(type, pCopy ? pCopy->c_str() : nullptr, data);
+            });
+            return true;
+        }
+        return false;
+    }
+
 #ifdef IOS
     static std::mutex KSPollsMutex;
     // static std::condition_variable KSPollsCV;
@@ -2006,6 +2037,11 @@ public:
 };
 
 KitSocketPoll *KitSocketPoll::mainPoll = nullptr;
+
+bool pushToMainThread(LibreOfficeKitCallback cb, int type, const char *p, void *data)
+{
+    return KitSocketPoll::pushToMainThread(cb, type, p, data);
+}
 
 #ifdef IOS
 
@@ -2648,7 +2684,6 @@ void lokit_main(
         }
 
         LOG_INF("Kit unipoll loop run");
-
         loKit->runLoop(pollCallback, wakeCallback, mainKit.get());
 
         LOG_INF("Kit unipoll loop run terminated.");
