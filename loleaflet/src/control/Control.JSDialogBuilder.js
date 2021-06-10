@@ -410,6 +410,8 @@ L.Control.JSDialogBuilder = L.Control.extend({
 			}
 		}
 
+		parentContainer.id = data.id;
+
 		return true;
 	},
 
@@ -3100,6 +3102,8 @@ L.Control.JSDialogBuilder = L.Control.extend({
 
 		if (data.visible === 'false' || data.visible === false) {
 			var control = parent.querySelector('#' + data.id);
+			if (!control && parent.id == data.id)
+				control = parent;
 			if (control)
 				control.style.display = 'none';
 		}
